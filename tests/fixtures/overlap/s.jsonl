@@ -1,0 +1,6 @@
+{"type":"user","timestamp":"2026-10-19T09:41:07.417Z","message":{"role":"user","content":"first prompt"}}
+{"type":"system","subtype":"turn_duration","durationMs":28523,"timestamp":"2026-10-19T09:41:35.802Z"}
+{"type":"user","timestamp":"2026-10-19T09:42:47.113Z","message":{"role":"user","content":"do it"}}
+{"type":"system","subtype":"turn_duration","durationMs":90043,"timestamp":"2026-10-19T09:44:17.143Z"}
+{"type":"user","isMeta":true,"timestamp":"2026-10-19T09:44:46.601Z","message":{"role":"user","content":"agent reported back"}}
+{"type":"system","subtype":"turn_duration","durationMs":198898,"timestamp":"2026-10-19T09:46:05.997Z"}

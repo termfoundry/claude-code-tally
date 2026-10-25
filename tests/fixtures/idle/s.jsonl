@@ -1,0 +1,10 @@
+{"timestamp": "2026-10-18T09:00:00.000Z", "type": "user", "origin": {"kind": "human"}, "message": {"content": "turn one"}}
+{"timestamp": "2026-10-18T09:01:00.000Z", "type": "assistant", "message": {"id": "a1", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []}}
+{"timestamp": "2026-10-18T09:02:00.000Z", "type": "assistant", "message": {"id": "a2", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []}}
+{"timestamp": "2026-10-18T09:03:00.000Z", "type": "assistant", "message": {"id": "a3", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []}}
+{"timestamp": "2026-10-18T12:03:00.000Z", "type": "assistant", "message": {"id": "a4", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []}}
+{"timestamp": "2026-10-18T12:05:00.000Z", "type": "system", "subtype": "turn_duration", "durationMs": 11100000}
+{"timestamp": "2026-10-18T12:20:00.000Z", "type": "user", "origin": {"kind": "human"}, "message": {"content": "turn two"}}
+{"timestamp": "2026-10-18T12:21:00.000Z", "type": "assistant", "message": {"id": "b1", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []}}
+{"timestamp": "2026-10-18T13:01:00.000Z", "type": "assistant", "message": {"id": "b2", "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []}}
+{"timestamp": "2026-10-18T13:02:30.000Z", "type": "system", "subtype": "turn_duration", "durationMs": 2550000}
