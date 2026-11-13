@@ -162,6 +162,20 @@ EOF
 out=$(json $W/x $W/x/s.jsonl | HOME=$W/hx $SH $S 2>$W/err | plain)
 case "$out" in *'last turn 3m00s'*'2 turns'*'(8m00s active)'*) [ -s $W/err ] && bad "interrupted turn: errors" "$(cat $W/err)" || ok "an interrupted turn: last turn 3m00s, 8m00s active" ;; *) bad "interrupted turn" "$out" ;; esac
 
+echo "  [an advisor call: the advisor's model and tokens, and the call]"
+# One Sonnet response over three rows that called an Opus advisor (the numbers
+# of a real one): the response's usage leaves the advisor's tokens out.
+rm -rf $W/v $W/hv; mkdir -p $W/v $W/hv
+V='"model":"claude-sonnet-5-5","usage":{"input_tokens":6,"cache_read_input_tokens":128792,"cache_creation_input_tokens":2666,"output_tokens":1000,"iterations":[{"type":"message","input_tokens":4,"output_tokens":182,"cache_read_input_tokens":63910,"cache_creation_input_tokens":972},{"type":"advisor_message","model":"claude-opus-5-5","input_tokens":66691,"output_tokens":11186,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":2,"output_tokens":818,"cache_read_input_tokens":64882,"cache_creation_input_tokens":1694}]}'
+cat > $W/v/s.jsonl <<EOF
+{"type":"user","timestamp":"2026-11-13T09:00:00.000Z","origin":{"kind":"human"},"message":{"content":"do it"}}
+{"type":"assistant","timestamp":"2026-11-13T09:00:10.000Z","message":{"id":"v1",$V,"content":[{"type":"server_tool_use","name":"advisor"}]}}
+{"type":"assistant","timestamp":"2026-11-13T09:00:20.000Z","message":{"id":"v1",$V,"content":[{"type":"advisor_tool_result"}]}}
+{"type":"assistant","timestamp":"2026-11-13T09:00:30.000Z","message":{"id":"v1",$V,"content":[{"type":"tool_use"}]}}
+EOF
+out=$(json $W/v $W/v/s.jsonl | sed 's/"id":"claude-opus-5-5","display_name":"Opus 5.5"/"id":"claude-sonnet-5-5","display_name":"Sonnet 5.5"/' | HOME=$W/hv $SH $S 2>$W/err | plain | tail -1)
+case "$out" in 'Sonnet 5.5 ↑131k ↓1k ⚡98% · Opus 5.5 ↑67k ↓11k ⚡0% · 🔧 2 · 1 turn'*) [ -s $W/err ] && bad "advisor: errors" "$(cat $W/err)" || ok "Sonnet 5.5 ↑131k ↓1k, then Opus 5.5 ↑67k ↓11k, 🔧 2" ;; *) bad "advisor" "$out" ;; esac
+
 echo "  [git: a refresh leaves the index alone]"
 rm -rf $W/lock; mkdir -p $W/lock
 ( cd $W/lock && git init -q && echo a > f && git add f && git -c user.email=t@t -c user.name=t commit -q -m one && sleep 1 && touch f ) 2>/dev/null

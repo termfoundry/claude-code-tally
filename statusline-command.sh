@@ -412,7 +412,8 @@ NL='
 # was appended since the last refresh is read: the totals so far are kept per
 # transcript file under $HOME/.claude/statusline-state/transcript/.
 ST_DIR="$HOME/.claude/statusline-state/transcript"
-# Events, one per row: A(ssistant response) id model in cache_read cache_write out tool_uses,
+# Events, one per row: A(ssistant response) id model in cache_read cache_write out tool_uses
+#   advisor_model advisor_in advisor_cache_read advisor_cache_write advisor_out advisor_calls,
 # R(esults) count errors, P(rompt typed) ms, B(ang: a `!` command) ms, T(urn) duration_ms end_ms,
 # X (an interrupt) ms, M(ode) name,
 # each row first giving its time as Z(time) ms. Times are the rows' UTC
@@ -438,11 +439,17 @@ fromjson? // empty
   # permission-mode rows only now and then, so either can be the latest.
   (if .type == "user" and (.isSidechain | not) and .origin.kind == "human" and (.permissionMode | type) == "string"
    then "M\t\(.permissionMode)" else empty end),
+  # A response that called the advisor tool carries the advisor model`s own
+  # tokens apart, in usage.iterations: the response`s own usage leaves them
+  # out. The call itself is a tool call run by the server.
   (if .type == "assistant" and .message.usage != null then
       ["A", (.message.id // ""), (.message.model // "?"),
        (.message.usage.input_tokens // 0), (.message.usage.cache_read_input_tokens // 0),
        (.message.usage.cache_creation_input_tokens // 0), (.message.usage.output_tokens // 0),
-       ([.message.content[]? | select(.type == "tool_use")] | length)] | @tsv
+       ([.message.content[]? | select(.type == "tool_use" or .type == "server_tool_use")] | length),
+       ([.message.usage.iterations[]? | select(.type == "advisor_message")] as $v
+        | ($v[0].model // ""), ($v | map(.input_tokens // 0) | add // 0), ($v | map(.cache_read_input_tokens // 0) | add // 0),
+          ($v | map(.cache_creation_input_tokens // 0) | add // 0), ($v | map(.output_tokens // 0) | add // 0), ($v | length))] | @tsv
     elif .type == "user" then
       # Tool results count in every transcript (subagents too); prompts only
       # when typed in the main conversation. Claude Code marks those with
@@ -520,7 +527,7 @@ tally_file() {
     _snap=$_t; _t=""
     cp "$_st" "$_snap" 2>/dev/null || : > "$_snap"
     # A state file from an older layout is counted again from the start.
-    [ "$(awk -F'\t' '$1 == "version" { print $2 }' "$_snap")" = "9" ] || : > "$_snap"
+    [ "$(awk -F'\t' '$1 == "version" { print $2 }' "$_snap")" = "10" ] || : > "$_snap"
     # offset, then tail (the 16 bytes before it, in hex) and row (the uuid of
     # the last row read with one); the - keeps an empty one in its place
     set -- $(awk -F'\t' '$1 == "offset" { o = $2 } $1 == "tail" { t = $2; r = $3 } END { print o + 0, t "-", r "-" }' "$_snap")
@@ -580,8 +587,17 @@ tally_file() {
         for (i = 1; i <= n; i++) { split(I[i], J, ":"); if (J[2] + 0 > t) r = add(r, I[i]) }
         return r
       }
+      # The advisor tokens of the response under way ($9 to $14), counted once
+      # like the response: what this row adds to its earlier rows (ak is the
+      # advisor model, ain to aout the values of the last row).
+      function adv() {
+        if ($9 == "") return
+        if (ak == "") { ak = $9; if (!(ak in req)) order[++nm] = ak; req[ak] += $14; ain = ard = awr = aout = 0 }
+        tin[ak] += $10 - ain; rd[ak] += $11 - ard; wr[ak] += $12 - awr; out[ak] += $13 - aout
+        ain = $10; ard = $11; awr = $12; aout = $13
+      }
       FILENAME == st {
-        if ($1 == "last") { lastid = $2; lk = $3; lin = $4; lrd = $5; lwr = $6; lout = $7 }
+        if ($1 == "last") { lastid = $2; lk = $3; lin = $4; lrd = $5; lwr = $6; lout = $7; ak = $8; ain = $9; ard = $10; awr = $11; aout = $12 }
         else if ($1 == "turns") turns = $2
         else if ($1 == "tail") row = $3
         else if ($1 == "tools") { tools = $2; terr = $3 }
@@ -623,9 +639,10 @@ tally_file() {
         if ($2 != "" && $2 == lastid) {
           if (lk != "") { tin[lk] += $4 - lin; rd[lk] += $5 - lrd; wr[lk] += $6 - lwr; out[lk] += $7 - lout }
           lin = $4; lrd = $5; lwr = $6; lout = $7
+          adv()
           next
         }
-        lastid = $2; k = $3
+        lastid = $2; k = $3; ak = ""; adv()
         if (k ~ /^</) { lk = ""; next }       # <synthetic>: no model was called
         lk = k; lin = $4; lrd = $5; lwr = $6; lout = $7
         if (!(k in req)) order[++nm] = k
@@ -664,9 +681,9 @@ tally_file() {
         next
       }
       END {
-        print "version\t9"; print "offset\t" off; print "tail\t" tail "\t" row
+        print "version\t10"; print "offset\t" off; print "tail\t" tail "\t" row
         print "mode\t" mode; printf "bang\t%d\t%.0f\n", inturn, bang
-        print "last\t" lastid "\t" lk "\t" lin + 0 "\t" lrd + 0 "\t" lwr + 0 "\t" lout + 0
+        print "last\t" lastid "\t" lk "\t" lin + 0 "\t" lrd + 0 "\t" lwr + 0 "\t" lout + 0 "\t" ak "\t" ain + 0 "\t" ard + 0 "\t" awr + 0 "\t" aout + 0
         print "turns\t" turns + 0
         print "tools\t" tools + 0 "\t" terr + 0; printf "tdur\t%.0f\t%.0f\t%.0f\t%.0f\n", tlast, tsum, tend, pt
         printf "idle\t%.0f\t%s\n", zlast, idle; printf "cov\t%.0f\t%s\n", cs, cov
@@ -707,7 +724,7 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && mkdir -p "$ST_DIR" 
         sf = ENVIRON["ST_DIR"] "/" N[i] ".tsv"; v = ""; o = ""
         while ((getline l < sf) > 0) { split(l, F, "\t"); if (F[1] == "version") v = F[2]; else if (F[1] == "offset") o = F[2] }
         close(sf)
-        print ((v == "9" && o != "" && o == size[i]) ? "-" : "+") "\t" sf "\t" P[i]
+        print ((v == "10" && o != "" && o == size[i]) ? "-" : "+") "\t" sf "\t" P[i]
       }
     }')
   while IFS='	' read -r behind sf sub; do

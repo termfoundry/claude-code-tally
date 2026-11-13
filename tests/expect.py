@@ -23,7 +23,7 @@ for i, f in enumerate(files):
             if i == 0:
                 if bang is not None: turns += 1; events.append(("P", bang)); bang = None
                 at_work = True
-            tools += sum(1 for b in msg.get("content") or [] if b.get("type") == "tool_use"); last[msg["id"]] = (msg["model"], msg["usage"])
+            tools += sum(1 for b in msg.get("content") or [] if b.get("type") in ("tool_use", "server_tool_use")); last[msg["id"]] = (msg["model"], msg["usage"])
         elif r.get("type") == "user":
             c = msg.get("content")
             if isinstance(c, list): errs += sum(1 for b in c if b.get("type") == "tool_result" and b.get("is_error"))
@@ -39,6 +39,10 @@ for i, f in enumerate(files):
             e = ms(r["timestamp"]); events.append(("T", e - r["durationMs"], e)); at_work = False
         elif i == 0 and r.get("type") == "permission-mode": mode = r["permissionMode"]
     for model, u in last.values():
+        # Each advisor call on the advisor's own model: the response's usage leaves it out
+        for v in u.get("iterations") or []:
+            if v.get("type") != "advisor_message": continue
+            e = m[v["model"]]; e[0] += 1; e[1] += v.get("input_tokens", 0); e[2] += v.get("cache_read_input_tokens", 0); e[3] += v.get("cache_creation_input_tokens", 0); e[4] += v.get("output_tokens", 0)
         if model.startswith("<"): continue
         e = m[model]; e[0] += 1; e[1] += u.get("input_tokens", 0); e[2] += u.get("cache_read_input_tokens", 0); e[3] += u.get("cache_creation_input_tokens", 0); e[4] += u.get("output_tokens", 0)
 # Covered: each row of any transcript and the 15 minutes after it, merged.

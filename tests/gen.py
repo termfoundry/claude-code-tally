@@ -61,9 +61,17 @@ def session(model, side, n_turns, f):
             mid += 1; ident = "msg_%s_%d_%d" % (model, int(side), mid)
             uu0 = {"input_tokens": R.randint(0, 50), "cache_read_input_tokens": R.randint(1000, 400000), "cache_creation_input_tokens": R.randint(0, 9000)}
             outn = R.randint(5, 3000); rows = R.randint(1, 4)
+            # Now and then a call to the advisor tool: the advisor model's tokens on
+            # every row of the response from the row with the call on, apart
+            # from the response's own (which leave them out)
+            adv = R.random() < 0.05 and {"type": "advisor_message", "model": "claude-opus-5-5", "input_tokens": R.randint(20000, 90000), "output_tokens": R.randint(500, 12000), "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+            adv_row = R.randint(0, rows - 1)
             for r in range(rows):
                 uu = dict(uu0, output_tokens=(outn if r == rows - 1 else R.randint(1, outn)))
                 blocks = [{"type": "tool_use", "name": "Bash"}] if R.random() < 0.6 else [{"type": "text", "text": "ok"}]
+                if adv and r >= adv_row:
+                    uu["iterations"] = [{"type": "message", "input_tokens": 1, "output_tokens": 1}, adv]
+                    if r == adv_row: blocks = [{"type": "server_tool_use", "name": "advisor"}]
                 w({"type": "assistant", "isSidechain": side, "timestamp": ts(), "message": {"id": ident, "model": model, "usage": uu, "content": blocks}})
                 if blocks[0]["type"] == "tool_use":
                     w({"type": "user", "isSidechain": side, "timestamp": ts(), "message": {"content": [{"type": "tool_result", "is_error": R.random() < 0.08}]}})
