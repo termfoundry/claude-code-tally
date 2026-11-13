@@ -37,7 +37,7 @@ The pace is how much of the limit you would have used by now if you spread it ev
 
 ## Install
 
-Requires `jq` 1.6 or later and `git` 2.15 or later, plus the standard tools every macOS and Linux system has (`awk`, `sed`, `date`, `stat`, `od`). Runs with bash, dash or BusyBox `sh`.
+Requires `jq` 1.6 or later and `git` 2.15 or later, plus the standard tools every macOS and Linux system has, such as `awk`, `sed`, `stat` and `od`. Runs with bash, dash or BusyBox `sh`.
 
 The easy way: ask Claude Code.
 
@@ -45,7 +45,7 @@ The easy way: ask Claude Code.
 Install the status line from https://github.com/termfoundry/claude-code-tally
 ```
 
-It clones the repo, runs `install.sh` and adds the `statusLine` entry to `~/.claude/settings.json`, asking you before each step.
+It clones the repo, runs `install.sh` and adds the `statusLine` entry to `~/.claude/settings.json`, asking for permission where your settings require it.
 
 By hand:
 
