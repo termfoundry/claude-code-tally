@@ -61,18 +61,27 @@ def session(model, side, n_turns, f):
             mid += 1; ident = "msg_%s_%d_%d" % (model, int(side), mid)
             uu0 = {"input_tokens": R.randint(0, 50), "cache_read_input_tokens": R.randint(1000, 400000), "cache_creation_input_tokens": R.randint(0, 9000)}
             outn = R.randint(5, 3000); rows = R.randint(1, 4)
+            # A subagent's response written before it ended, as Claude Code
+            # writes those that run a tool: the output count of its first
+            # moment on every row, no stop reason
+            early = side and R.random() < 0.5
             # Now and then a call to the advisor tool: the advisor model's tokens on
             # every row of the response from the row with the call on, apart
             # from the response's own (which leave them out)
             adv = R.random() < 0.05 and {"type": "advisor_message", "model": "claude-opus-5-5", "input_tokens": R.randint(20000, 90000), "output_tokens": R.randint(500, 12000), "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
             adv_row = R.randint(0, rows - 1)
             for r in range(rows):
-                uu = dict(uu0, output_tokens=(outn if r == rows - 1 else R.randint(1, outn)))
-                blocks = [{"type": "tool_use", "name": "Bash"}] if R.random() < 0.6 else [{"type": "text", "text": "ok"}]
+                uu = dict(uu0, output_tokens=(8 if early else outn if r == rows - 1 else R.randint(1, outn)))
+                k = R.random()
+                blocks = ([{"type": "tool_use", "name": "Bash", "input": {"command": "x" * R.randint(0, 900)}}] if k < 0.6
+                          else [{"type": "thinking", "thinking": "", "signature": "s" * R.randint(200, 9000)}] if k < 0.8
+                          else [{"type": "text", "text": "ok" * R.randint(1, 700)}])
                 if adv and r >= adv_row:
                     uu["iterations"] = [{"type": "message", "input_tokens": 1, "output_tokens": 1}, adv]
                     if r == adv_row: blocks = [{"type": "server_tool_use", "name": "advisor"}]
-                w({"type": "assistant", "isSidechain": side, "timestamp": ts(), "message": {"id": ident, "model": model, "usage": uu, "content": blocks}})
+                # The last row of a response that ended carries its stop reason; the rows before it none
+                stop = None if early or r < rows - 1 else "tool_use" if blocks[0]["type"] == "tool_use" else "end_turn"
+                w({"type": "assistant", "isSidechain": side, "timestamp": ts(), "message": {"id": ident, "model": model, "usage": uu, "stop_reason": stop, "content": blocks}})
                 if blocks[0]["type"] == "tool_use":
                     w({"type": "user", "isSidechain": side, "timestamp": ts(), "message": {"content": [{"type": "tool_result", "is_error": R.random() < 0.08}]}})
             if R.random() < 0.05:

@@ -1,10 +1,19 @@
 # expect.py <data dir>: the totals worked out independently of the script
-import json, sys, glob, collections, datetime
+import json, sys, glob, collections, datetime, math
 d = sys.argv[1]; CAP = 900000
 files = [d + "/s.jsonl"] + sorted(glob.glob(d + "/s/subagents/*.jsonl")) + sorted(glob.glob(d + "/s/subagents/workflows/*/agent-*.jsonl"))
 def ms(t):
     return round(datetime.datetime.strptime(t, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
 NOT_PROMPT = ("<command-", "<local-command", "[Request interrupted", "<bash-", "<task-notification")
+# The output of a response written before it ended (no stop reason on its last
+# row), estimated from what its rows hold, where that is more than its count
+def estimate(blocks):
+    e = 0
+    for b in blocks or []:
+        if b.get("type") == "thinking": e += len(b.get("signature") or "") * 0.25 + len(b.get("thinking") or "") * 0.35
+        elif b.get("type") == "text": e += len(b.get("text") or "") * 0.35
+        elif b.get("type") == "tool_use": e += len(json.dumps(b.get("input") or {}, separators=(",", ":"))) * 0.4 + 40
+    return math.floor(e)
 m = collections.defaultdict(lambda: [0, 0, 0, 0, 0]); tools = errs = turns = 0; mode = ""; events = []; points = []
 # A `!` command typed while Claude is idle (no response since the last turn
 # ended) is a turn when Claude answers it before any other prompt.
@@ -23,7 +32,7 @@ for i, f in enumerate(files):
             if i == 0:
                 if bang is not None: turns += 1; events.append(("P", bang)); bang = None
                 at_work = True
-            tools += sum(1 for b in msg.get("content") or [] if b.get("type") in ("tool_use", "server_tool_use")); last[msg["id"]] = (msg["model"], msg["usage"])
+            tools += sum(1 for b in msg.get("content") or [] if b.get("type") in ("tool_use", "server_tool_use")); last[msg["id"]] = (msg["model"], msg["usage"], msg.get("stop_reason") is not None, last.get(msg["id"], (0, 0, 0, 0))[3] + estimate(msg.get("content")))
         elif r.get("type") == "user":
             c = msg.get("content")
             if isinstance(c, list): errs += sum(1 for b in c if b.get("type") == "tool_result" and b.get("is_error"))
@@ -38,13 +47,13 @@ for i, f in enumerate(files):
         elif i == 0 and r.get("type") == "system" and r.get("subtype") == "turn_duration":
             e = ms(r["timestamp"]); events.append(("T", e - r["durationMs"], e)); at_work = False
         elif i == 0 and r.get("type") == "permission-mode": mode = r["permissionMode"]
-    for model, u in last.values():
+    for model, u, ended, est in last.values():
         # Each advisor call on the advisor's own model: the response's usage leaves it out
         for v in u.get("iterations") or []:
             if v.get("type") != "advisor_message": continue
             e = m[v["model"]]; e[0] += 1; e[1] += v.get("input_tokens", 0); e[2] += v.get("cache_read_input_tokens", 0); e[3] += v.get("cache_creation_input_tokens", 0); e[4] += v.get("output_tokens", 0)
         if model.startswith("<"): continue
-        e = m[model]; e[0] += 1; e[1] += u.get("input_tokens", 0); e[2] += u.get("cache_read_input_tokens", 0); e[3] += u.get("cache_creation_input_tokens", 0); e[4] += u.get("output_tokens", 0)
+        e = m[model]; e[0] += 1; e[1] += u.get("input_tokens", 0); e[2] += u.get("cache_read_input_tokens", 0); e[3] += u.get("cache_creation_input_tokens", 0); e[4] += u.get("output_tokens", 0) if ended else max(u.get("output_tokens", 0), est)
 # Covered: each row of any transcript and the 15 minutes after it, merged.
 cover = []
 for p in sorted(points):

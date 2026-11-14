@@ -20,17 +20,17 @@ Opus 5 ↑511.6M ↓1.6M ⚡96% (5 misses) · Sonnet 5 ↑28.9M ↓247k ⚡96% �
 
 | Line | Parts |
 | --- | --- |
-| 1 | Model and effort · permission mode · repository or project folder · `⎇` branch, `↑`/`↓` ahead/behind · `+added −removed in N` files, `●` staged, `✚` unstaged, `?` untracked · how long the last turn took |
+| 1 | Model and effort · permission mode · repository or project folder · `⎇` branch, `↑`/`↓` ahead/behind · `+added −removed in N` files, `●` staged, `✚` unstaged, `?` untracked · how long the last turn took. Shortened to fit a narrow terminal |
 | `ctx` | Context window fill, then the tokens in the context / the window size |
 | `5h`, `7d` | Plan limit used, `(pace)`, the difference from the pace, time until the reset (Pro and Max plans only) |
-| last | Per model for the whole session: `↑` in, `↓` out, `⚡` cache share. Then `🔧` tool calls and `✗` errors, turns, cost, `⏱` session time and the time Claude actually worked. Shortened to fit a narrow terminal |
+| last | Per model for the whole session: `↑` in, `↓` out (`~` when part of it is an estimate), `⚡` cache share. Then `🔧` tool calls and `✗` errors, turns, cost, `⏱` session time and the time Claude actually worked. Shortened to fit a narrow terminal |
 | review *(optional)* | Scores per round while a review loop of your own runs |
 
 Every part in detail, and where each number comes from: [How it works](docs/how-it-works.md).
 
 ## Colours and the pace
 
-- **`ctx`:** each filled cell is coloured by its position: green up to 15% of the window, yellow 15–20%, red above. On a 1M window that is where a session starts to get costly, since every request re-sends the whole context. The percentage takes its zone's colour; `⚠` from 75%.
+- **`ctx`:** each filled cell is coloured by its position. On a 1M window: green up to 150k tokens (15%), yellow to 200k (20%), red above, which is where a session starts to get costly, since every request re-sends the whole context. On a 200k window: green up to 50%, yellow to 75%, red above. The percentage takes its zone's colour; `⚠` from 75%.
 - **`5h` / `7d`:** blue is what you used. Within the pace, grey filled cells run up to the pace. Over it, blue runs up to the pace and red shows the part beyond. The difference is green within the pace, red over it.
 
 The pace is how much of the limit you would have used by now if you spread it evenly over the window: after 3 of the 5 hours, 60%. Under it, you won't run out before the reset at this rate. The 7d pace only moves during active hours (default 10:00–22:00 local; `ACT_START_HHMM`, such as `0900`, and `ACT_LEN_H` at the top of the script), so nights don't make you look under pace.

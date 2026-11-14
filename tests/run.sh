@@ -176,6 +176,34 @@ EOF
 out=$(json $W/v $W/v/s.jsonl | sed 's/"id":"claude-opus-5-5","display_name":"Opus 5.5"/"id":"claude-sonnet-5-5","display_name":"Sonnet 5.5"/' | HOME=$W/hv $SH $S 2>$W/err | plain | tail -1)
 case "$out" in 'Sonnet 5.5 ↑131k ↓1k ⚡98% · Opus 5.5 ↑67k ↓11k ⚡0% · 🔧 2 · 1 turn'*) [ -s $W/err ] && bad "advisor: errors" "$(cat $W/err)" || ok "Sonnet 5.5 ↑131k ↓1k, then Opus 5.5 ↑67k ↓11k, 🔧 2" ;; *) bad "advisor" "$out" ;; esac
 
+echo "  [a subagent's response written before it ended: its output estimated; Claude Code's own totals]"
+# A subagent's response over two rows with the output count of its first moment
+# (8) and no stop reason: 1000 tokens of thinking and 84 of tool call by what
+# the rows hold; then one that ended, 300.
+rm -rf $W/c $W/hc; mkdir -p $W/c/s/subagents $W/hc
+U='"usage":{"input_tokens":2000,"output_tokens":8}'
+SIG=$(awk 'BEGIN { while (n++ < 4000) printf "s" }'); CMD=$(awk 'BEGIN { while (n++ < 96) printf "x" }')
+cat > $W/c/s.jsonl <<EOF
+{"type":"user","timestamp":"2026-11-13T09:00:00.000Z","origin":{"kind":"human"},"message":{"content":"do it"}}
+{"type":"assistant","timestamp":"2026-11-13T09:00:10.000Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":10},"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}
+EOF
+cat > $W/c/s/subagents/agent-x.jsonl <<EOF
+{"type":"assistant","isSidechain":true,"timestamp":"2026-11-13T09:00:05.000Z","message":{"id":"p1","model":"claude-sonnet-5-5",$U,"stop_reason":null,"content":[{"type":"thinking","thinking":"","signature":"$SIG"}]}}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-11-13T09:00:06.000Z","message":{"id":"p1","model":"claude-sonnet-5-5",$U,"stop_reason":null,"content":[{"type":"tool_use","name":"Bash","input":{"command":"$CMD"}}]}}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-11-13T09:00:08.000Z","message":{"id":"p2","model":"claude-sonnet-5-5","usage":{"input_tokens":2000,"output_tokens":300},"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+EOF
+out=$(json $W/c $W/c/s.jsonl | HOME=$W/hc $SH $S 2>$W/err | plain | tail -1)
+case "$out" in 'Opus 5.5 ↑1k ↓10 ⚡0% · Sonnet 5.5 ↑4k ↓~1k ⚡0% · 🔧 2 · 1 turn'*) [ -s $W/err ] && bad "estimated output: errors" "$(cat $W/err)" || ok "8 tokens written, ↓~1k shown (1084 estimated + 300)" ;; *) bad "estimated output" "$out" ;; esac
+# Claude Code's own totals as the session was left (more input on both models,
+# the subagent's real output, a model with no row at all), then one more turn
+cat >> $W/c/s.jsonl <<EOF
+{"type":"cost-state","sessionId":"k","modelUsage":{"claude-opus-5-5":{"inputTokens":50000,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"outputTokens":7000},"claude-sonnet-5-5":{"inputTokens":6000,"outputTokens":2500},"claude-haiku-5-5":{"inputTokens":300,"outputTokens":20}}}
+{"type":"user","timestamp":"2026-11-13T10:00:00.000Z","origin":{"kind":"human"},"message":{"content":"and this"}}
+{"type":"assistant","timestamp":"2026-11-13T10:00:10.000Z","message":{"id":"m2","model":"claude-opus-5-5","usage":{"input_tokens":2000,"output_tokens":500},"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}
+EOF
+out=$(json $W/c $W/c/s.jsonl | HOME=$W/hc $SH $S 2>$W/err | plain | tail -1)
+case "$out" in 'Opus 5.5 ↑52k ↓8k ⚡0% · Sonnet 5.5 ↑6k ↓3k ⚡0% · Haiku 5.5 ↑300 ↓20 ⚡0% · 🔧 2 · 2 turns'*) [ -s $W/err ] && bad "Claude Code's totals: errors" "$(cat $W/err)" || ok "Claude Code's totals, then what came after: ↑52k ↓8k, Sonnet ↓3k, Haiku shown" ;; *) bad "Claude Code's totals" "$out" ;; esac
+
 echo "  [git: a refresh leaves the index alone]"
 rm -rf $W/lock; mkdir -p $W/lock
 ( cd $W/lock && git init -q && echo a > f && git add f && git -c user.email=t@t -c user.name=t commit -q -m one && sleep 1 && touch f ) 2>/dev/null
@@ -202,6 +230,21 @@ for c in 160 120 80; do
   case "$(printf '%s' "$l" | plain)" in *'Opus 5.5 ↑'*'$17.18 · ⏱ 1h23m'*' active)') [ "$w" -le $(( c - 2 )) ] && ok "COLUMNS=$c: $w columns, cost and time kept" || bad "COLUMNS=$c: $w columns" ;; *) bad "COLUMNS=$c" "$(printf '%s' "$l" | plain)" ;; esac
 done
 
+echo "  [line 1 fitted to the terminal; the context colours by window size]"
+rm -rf $W/ln; mkdir -p $W/ln/a-long-project-folder-name
+( cd $W/ln/a-long-project-folder-name && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m one && git checkout -q -b feature/a-rather-long-branch-name-for-a-change \
+  && printf 'a\n' > f && git add f && printf 'b\n' >> f && echo u > u ) 2>/dev/null
+l=$(json $W/ln/a-long-project-folder-name $W/q/s.jsonl | env -u COLUMNS HOME=$W/hq $SH $S 2>&1 | head -n 1 | plain)
+case "$l" in *'⎇ feature/a-rather-long-branch-name-for-a-change · +'*' ●1 ✚1 ?1 · last turn 5m00s') ok "no COLUMNS: line 1 in full" ;; *) bad "line 1 in full" "$l" ;; esac
+for c in 100 80 60; do
+  l=$(json $W/ln/a-long-project-folder-name $W/q/s.jsonl | COLUMNS=$c HOME=$W/hq $SH $S 2>&1 | head -n 1); w=$(printf '%s\n' "$l" | cols_of)
+  case "$(printf '%s' "$l" | plain)" in 'Opus 5.5 high · plan · a-long-'*' · ⎇ feature/'*) [ "$w" -le $(( c - 2 )) ] && ok "COLUMNS=$c: line 1 in $w columns, model, folder and branch kept" || bad "COLUMNS=$c: line 1 takes $w columns" "$(printf '%s' "$l" | plain)" ;; *) bad "COLUMNS=$c: line 1" "$(printf '%s' "$l" | plain)" ;; esac
+done
+a=$(json $W "" | HOME=$W/h $SH $S 2>&1 | sed -n 2p); b=$(json $W "" | sed 's/"context_window_size":1000000/"context_window_size":200000/' | HOME=$W/h $SH $S 2>&1 | sed -n 2p)
+case "$a|$b" in *"${E}[31m 31%"*'|'*"${E}[32m 31%"*) ok "31% used: red on a 1M window, green on a 200k one" ;; *) bad "context colours" "$(printf '%s\n%s' "$a" "$b" | plain)" ;; esac
+b=$(json $W "" | sed 's/"context_window_size":1000000/"context_window_size":200000/; s/"used_percentage":31/"used_percentage":80/' | HOME=$W/h $SH $S 2>&1 | sed -n 2p)
+case "$b" in *"${E}[32m"*"${E}[33m"*"${E}[31m"*"${E}[31m 80%"*) ok "80% of a 200k window: green, yellow and red cells, red percentage" ;; *) bad "context colours at 80%" "$(printf '%s' "$b" | plain)" ;; esac
+
 echo "  [model names, old IDs too]"
 rm -rf $W/mn; mkdir -p $W/mn
 for m in claude-3-5-sonnet-20241022 claude-3-opus-20240229 claude-haiku-4-5-20251001 claude-opus-5-5; do
@@ -209,6 +252,12 @@ for m in claude-3-5-sonnet-20241022 claude-3-opus-20240229 claude-haiku-4-5-2025
 done > $W/mn/m.jsonl
 l=$(json $W/mn $W/mn/m.jsonl | env -u COLUMNS HOME=$W/h $SH $S 2>&1 | tail -n 1 | plain)
 case "$l" in 'Opus 5.5 ↑'*'Sonnet 3.5 ↑'*'Opus 3 ↑'*'+1 more'*) ok "Opus 5.5, Sonnet 3.5, Opus 3" ;; *) bad "model names" "$l" ;; esac
+# Bedrock and Vertex IDs
+for m in us.anthropic.claude-sonnet-4-5-20250929-v1:0 claude-opus-4-1@20250805 arn:aws:bedrock:eu-west-1:1:inference-profile/eu.anthropic.claude-haiku-4-5-20251001-v1:0; do
+  printf '{"type":"assistant","timestamp":"2026-10-18T09:00:00.000Z","message":{"id":"x%s","model":"%s","usage":{"input_tokens":5,"output_tokens":5},"stop_reason":"end_turn","content":[]}}\n' "$m" "$m"
+done > $W/mn/c.jsonl
+l=$(json $W/mn $W/mn/c.jsonl | sed 's/"id":"claude-opus-5-5"/"id":"us.anthropic.claude-sonnet-4-5-20250929-v1:0"/' | env -u COLUMNS HOME=$W/h $SH $S 2>&1 | tail -n 1 | plain)
+case "$l" in 'Sonnet 4.5 ↑'*'Opus 4.1 ↑'*'Haiku 4.5 ↑'*) ok "Bedrock and Vertex IDs: Sonnet 4.5, Opus 4.1, Haiku 4.5" ;; *) bad "Bedrock and Vertex model names" "$l" ;; esac
 
 echo "  [edge cases]"
 for loc in "LC_ALL=de_DE.UTF-8" "LANG=de_DE.UTF-8" "LC_NUMERIC=de_DE.UTF-8"; do

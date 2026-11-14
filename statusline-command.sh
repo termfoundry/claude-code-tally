@@ -163,19 +163,29 @@ short_model=$(printf '%s\n' "$model" | sed 's/Claude //' | sed 's/ *(.*)//')
 
 # ── 2. Context bar (solid) ─────────────────────────────────
 used=$(printf '%s\n' "$input" | jq -r '.context_window.used_percentage // empty')
+ctx_size=$(printf '%s\n' "$input" | jq -r '.context_window.context_window_size // empty | numbers | floor' 2>/dev/null)
+case "$ctx_size" in ''|*[!0-9]*) ctx_size=0 ;; esac
+# Where the bar turns yellow and red, in % of the window. A window above 200k
+# (1M): at 150k and 200k tokens, where a session starts to get expensive, since
+# every request sends the whole context again (15% and 20% of 1M). A 200k
+# window, where those marks would colour it from the start: at 50% and 75%.
+if [ "$ctx_size" -gt 200000 ]; then
+  zone_yel=$(( 15000000 / ctx_size )); zone_red=$(( 20000000 / ctx_size ))
+else
+  zone_yel=50; zone_red=75
+fi
 if [ -n "$used" ]; then
   used_int=$(printf "%.0f" "$used")
   filled=$(( (used_int * CTX_CELLS + 50) / 100 ))
   if [ "$filled" -eq 0 ] && [ "$used_int" -gt 0 ]; then filled=1; fi
   if [ "$filled" -gt "$CTX_CELLS" ]; then filled=$CTX_CELLS; fi
   # Zoned fill: each cell is colored by its POSITION in the bar, not all one
-  # color. On a 1M window the ≈150k and ≈200k marks are where a session starts
-  # to get expensive:
-  #   cells [0, green_end)       → green  (< 15%)
-  #   cells [green_end, yel_end) → yellow (15–20%)
-  #   cells [yel_end, …)         → red    (≥ 20%)
-  green_end=$(( 15 * CTX_CELLS / 100 ))
-  yel_end=$(( 20 * CTX_CELLS / 100 ))
+  # color (on a 1M window, zone_yel 15 and zone_red 20):
+  #   cells [0, green_end)       → green  (< zone_yel %)
+  #   cells [green_end, yel_end) → yellow (zone_yel to zone_red %)
+  #   cells [yel_end, …)         → red    (≥ zone_red %)
+  green_end=$(( zone_yel * CTX_CELLS / 100 ))
+  yel_end=$(( zone_red * CTX_CELLS / 100 ))
   bar=""
   cur=""
   i=0
@@ -195,9 +205,9 @@ if [ -n "$used" ]; then
   done
   bar="${bar}${RESET}"
   # Percentage color — by the zone the current value sits in.
-  if [ "$used_int" -ge 20 ]; then
+  if [ "$used_int" -ge "$zone_red" ]; then
     ctx_color="$RED"
-  elif [ "$used_int" -ge 15 ]; then
+  elif [ "$used_int" -ge "$zone_yel" ]; then
     ctx_color="$YELLOW"
   else
     ctx_color="$GREEN"
@@ -308,6 +318,7 @@ fi
 cwd=$(printf '%s\n' "$input" | jq -r '.workspace.current_dir // .cwd // empty')
 git_part=""
 git_diff_part=""
+git_diff_short=""
 if [ -n "$cwd" ] && git_status=$(git -C "$cwd" status --porcelain=v2 --branch 2>/dev/null); then
   # head ahead behind staged unstaged untracked (a detached head shows its short sha)
   set -- $(printf '%s\n' "$git_status" | awk '
@@ -329,9 +340,10 @@ if [ -n "$cwd" ] && git_status=$(git -C "$cwd" status --porcelain=v2 --branch 2>
   [ "$g_ahead" -gt 0 ] && git_part="${git_part}${YELLOW} ↑${g_ahead}${RESET}"
   [ "$g_behind" -gt 0 ] && git_part="${git_part}${YELLOW} ↓${g_behind}${RESET}"
   if [ "$g_files" -eq 0 ] && [ "$g_untracked" -eq 0 ]; then
-    git_diff_part="${DIM}clean${RESET}"
+    git_diff_part="${DIM}clean${RESET}"; git_diff_short=$git_diff_part
   else
     git_diff_part="${GREEN}+${g_added}${RESET} ${RED}−${g_removed}${RESET}${DIM} in ${g_files}f${RESET}"
+    git_diff_short=$git_diff_part
     [ "$g_staged" -gt 0 ] && git_diff_part="${git_diff_part} ${GREEN}●${g_staged}${RESET}"
     [ "$g_unstaged" -gt 0 ] && git_diff_part="${git_diff_part} ${YELLOW}✚${g_unstaged}${RESET}"
     [ "$g_untracked" -gt 0 ] && git_diff_part="${git_diff_part} ${DIM}?${g_untracked}${RESET}"
@@ -413,7 +425,9 @@ NL='
 # transcript file under $HOME/.claude/statusline-state/transcript/.
 ST_DIR="$HOME/.claude/statusline-state/transcript"
 # Events, one per row: A(ssistant response) id model in cache_read cache_write out tool_uses
-#   advisor_model advisor_in advisor_cache_read advisor_cache_write advisor_out advisor_calls,
+#   advisor_model advisor_in advisor_cache_read advisor_cache_write advisor_out advisor_calls
+#   estimate final,
+# C0 then C(ost-state) model in cache_read cache_write out: Claude Code's own totals,
 # R(esults) count errors, P(rompt typed) ms, B(ang: a `!` command) ms, T(urn) duration_ms end_ms,
 # X (an interrupt) ms, M(ode) name,
 # each row first giving its time as Z(time) ms. Times are the rows' UTC
@@ -449,7 +463,25 @@ fromjson? // empty
        ([.message.content[]? | select(.type == "tool_use" or .type == "server_tool_use")] | length),
        ([.message.usage.iterations[]? | select(.type == "advisor_message")] as $v
         | ($v[0].model // ""), ($v | map(.input_tokens // 0) | add // 0), ($v | map(.cache_read_input_tokens // 0) | add // 0),
-          ($v | map(.cache_creation_input_tokens // 0) | add // 0), ($v | map(.output_tokens // 0) | add // 0), ($v | length))] | @tsv
+          ($v | map(.cache_creation_input_tokens // 0) | add // 0), ($v | map(.output_tokens // 0) | add // 0), ($v | length)),
+       # A subagent`s response that runs a tool is written before it ends, with
+       # the output count of its first moment (some 8 tokens) and no stop
+       # reason, and never written again. For those the output is estimated
+       # from what the row holds: a token per 4 characters of thinking
+       # signature, 0.35 per character of text, 0.4 per character of tool
+       # input, 40 per tool call (within some 3% over the responses of real
+       # sessions whose count is known).
+       ([.message.content[]? | if .type == "thinking" then ((.signature // "" | length) * 0.25 + (.thinking // "" | length) * 0.35)
+          elif .type == "text" then (.text // "" | length) * 0.35
+          elif .type == "tool_use" then ((.input // {} | tojson | length) * 0.4 + 40) else 0 end] | add // 0 | floor),
+       (if .message.stop_reason == null then 0 else 1 end)] | @tsv
+    # Claude Code`s own totals per model, written when the session is left or
+    # resumed: all its requests, those that leave no row here too (prompt
+    # suggestions, away summaries, compactions, its small helper model).
+    elif .type == "cost-state" and (.isSidechain | not) then
+      "C0", (.modelUsage // {} | to_entries[] | select(.value | type == "object")
+             | ["C", .key, (.value.inputTokens // 0), (.value.cacheReadInputTokens // 0),
+                (.value.cacheCreationInputTokens // 0), (.value.outputTokens // 0)] | @tsv)
     elif .type == "user" then
       # Tool results count in every transcript (subagents too); prompts only
       # when typed in the main conversation. Claude Code marks those with
@@ -527,7 +559,7 @@ tally_file() {
     _snap=$_t; _t=""
     cp "$_st" "$_snap" 2>/dev/null || : > "$_snap"
     # A state file from an older layout is counted again from the start.
-    [ "$(awk -F'\t' '$1 == "version" { print $2 }' "$_snap")" = "10" ] || : > "$_snap"
+    [ "$(awk -F'\t' '$1 == "version" { print $2 }' "$_snap")" = "11" ] || : > "$_snap"
     # offset, then tail (the 16 bytes before it, in hex) and row (the uuid of
     # the last row read with one); the - keeps an empty one in its place
     set -- $(awk -F'\t' '$1 == "offset" { o = $2 } $1 == "tail" { t = $2; r = $3 } END { print o + 0, t "-", r "-" }' "$_snap")
@@ -596,8 +628,19 @@ tally_file() {
         tin[ak] += $10 - ain; rd[ak] += $11 - ard; wr[ak] += $12 - awr; out[ak] += $13 - aout
         ain = $10; ard = $11; awr = $12; aout = $13
       }
+      # What the response under way puts into its model`s output ($7, or the
+      # estimate $15 summed over its rows where that is more and the row is
+      # not final, $16): counted once, each row replacing what the rows
+      # before it put in (lout). eo is the estimated part (le of it by this
+      # response).
+      function outp(   c, e) {
+        if ($16 + 0) { c = $7; e = 0 } else { c = lest + $15; if (c < $7) c = $7; e = c - $7 }
+        lest += $15
+        if (lk != "") { out[lk] += c - lout; eo[lk] += e - le }
+        lout = c; le = e
+      }
       FILENAME == st {
-        if ($1 == "last") { lastid = $2; lk = $3; lin = $4; lrd = $5; lwr = $6; lout = $7; ak = $8; ain = $9; ard = $10; awr = $11; aout = $12 }
+        if ($1 == "last") { lastid = $2; lk = $3; lin = $4; lrd = $5; lwr = $6; lout = $7; ak = $8; ain = $9; ard = $10; awr = $11; aout = $12; lest = $13; le = $14 }
         else if ($1 == "turns") turns = $2
         else if ($1 == "tail") row = $3
         else if ($1 == "tools") { tools = $2; terr = $3 }
@@ -608,7 +651,9 @@ tally_file() {
         else if ($1 == "lastcand") lastcand = $2
         else if ($1 == "mode") mode = $2
         else if ($1 == "bang") { inturn = $2; bang = $3 }
-        else if ($1 == "m") { k = $2; order[++nm] = k; req[k] = $3; tin[k] = $4; rd[k] = $5; wr[k] = $6; out[k] = $7 }
+        else if ($1 == "m") { k = $2; order[++nm] = k; req[k] = $3; tin[k] = $4; rd[k] = $5; wr[k] = $6; out[k] = $7; eo[k] = $8 }
+        else if ($1 == "cs") cst = $2
+        else if ($1 == "c") { ncs++; ck[ncs] = $2; ci[ncs] = $3; cr[ncs] = $4; cw[ncs] = $5; co[ncs] = $6; qi[ncs] = $7; qr[ncs] = $8; qw[ncs] = $9; qo[ncs] = $10; qe[ncs] = $11 }
         next
       }
       $1 == "Z" {
@@ -637,16 +682,25 @@ tally_file() {
         # One response spread over several rows: counted once, the last row`s usage
         # (the final output count) replacing what the earlier rows put in.
         if ($2 != "" && $2 == lastid) {
-          if (lk != "") { tin[lk] += $4 - lin; rd[lk] += $5 - lrd; wr[lk] += $6 - lwr; out[lk] += $7 - lout }
-          lin = $4; lrd = $5; lwr = $6; lout = $7
+          if (lk != "") { tin[lk] += $4 - lin; rd[lk] += $5 - lrd; wr[lk] += $6 - lwr }
+          lin = $4; lrd = $5; lwr = $6; outp()
           adv()
           next
         }
         lastid = $2; k = $3; ak = ""; adv()
+        lout = 0; le = 0; lest = 0
         if (k ~ /^</) { lk = ""; next }       # <synthetic>: no model was called
-        lk = k; lin = $4; lrd = $5; lwr = $6; lout = $7
+        lk = k; lin = $4; lrd = $5; lwr = $6
         if (!(k in req)) order[++nm] = k
-        req[k]++; tin[k] += $4; rd[k] += $5; wr[k] += $6; out[k] += $7
+        req[k]++; tin[k] += $4; rd[k] += $5; wr[k] += $6; outp()
+        next
+      }
+      # Claude Code`s totals (c...), and this transcript`s own at that
+      # moment (q...): the summary adds what Claude Code counted beyond them.
+      $1 == "C0" { ncs = 0; cst = zlast; next }
+      $1 == "C" {
+        ncs++; ck[ncs] = $2; ci[ncs] = $3; cr[ncs] = $4; cw[ncs] = $5; co[ncs] = $6
+        qi[ncs] = tin[$2] + 0; qr[ncs] = rd[$2] + 0; qw[ncs] = wr[$2] + 0; qo[ncs] = out[$2] + 0; qe[ncs] = eo[$2] + 0
         next
       }
       $1 == "R" { terr += $3; next }
@@ -681,14 +735,16 @@ tally_file() {
         next
       }
       END {
-        print "version\t10"; print "offset\t" off; print "tail\t" tail "\t" row
+        print "version\t11"; print "offset\t" off; print "tail\t" tail "\t" row
         print "mode\t" mode; printf "bang\t%d\t%.0f\n", inturn, bang
-        print "last\t" lastid "\t" lk "\t" lin + 0 "\t" lrd + 0 "\t" lwr + 0 "\t" lout + 0 "\t" ak "\t" ain + 0 "\t" ard + 0 "\t" awr + 0 "\t" aout + 0
+        print "last\t" lastid "\t" lk "\t" lin + 0 "\t" lrd + 0 "\t" lwr + 0 "\t" lout + 0 "\t" ak "\t" ain + 0 "\t" ard + 0 "\t" awr + 0 "\t" aout + 0 "\t" lest + 0 "\t" le + 0
         print "turns\t" turns + 0
         print "tools\t" tools + 0 "\t" terr + 0; printf "tdur\t%.0f\t%.0f\t%.0f\t%.0f\n", tlast, tsum, tend, pt
         printf "idle\t%.0f\t%s\n", zlast, idle; printf "cov\t%.0f\t%s\n", cs, cov
         print "cand\t" cand; print "lastcand\t" lastcand
-        for (i = 1; i <= nm; i++) { k = order[i]; print "m\t" k "\t" req[k] "\t" tin[k] "\t" rd[k] "\t" wr[k] "\t" out[k] }
+        if (ncs) printf "cs\t%.0f\n", cst
+        for (i = 1; i <= ncs; i++) printf "c\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n", ck[i], ci[i], cr[i], cw[i], co[i], qi[i], qr[i], qw[i], qo[i], qe[i]
+        for (i = 1; i <= nm; i++) { k = order[i]; printf "m\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n", k, req[k], tin[k], rd[k], wr[k], out[k], eo[k] }
       }' "$_snap" - > "$_new" && mv "$_new" "$_st" || break
     rm -f "$_chunk" "$_snap"
     _chunk=""; _snap=""; _new=""
@@ -724,7 +780,7 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && mkdir -p "$ST_DIR" 
         sf = ENVIRON["ST_DIR"] "/" N[i] ".tsv"; v = ""; o = ""
         while ((getline l < sf) > 0) { split(l, F, "\t"); if (F[1] == "version") v = F[2]; else if (F[1] == "offset") o = F[2] }
         close(sf)
-        print ((v == "10" && o != "" && o == size[i]) ? "-" : "+") "\t" sf "\t" P[i]
+        print ((v == "11" && o != "" && o == size[i]) ? "-" : "+") "\t" sf "\t" P[i]
       }
     }')
   while IFS='	' read -r behind sf sub; do
@@ -763,6 +819,9 @@ EOF
     }
     function pretty(m,  s, n, p, o, long) {
       long = (m ~ /\[1m\]$/); sub(/\[1m\]$/, "", m)
+      # Bedrock and Vertex IDs: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      # (after a region, in an ARN too), claude-sonnet-4-5@20250929
+      sub(/^.*anthropic\./, "", m); sub(/@.*$/, "", m); sub(/-v[0-9]+(:[0-9]+)?$/, "", m)
       s = m; sub(/^claude-/, "", s); n = split(s, p, "-")
       # Older IDs put the number first: claude-3-5-sonnet-20241022 is Sonnet 3.5.
       if (n >= 2 && p[1] ~ /^[0-9]+$/ && p[2] !~ /^[0-9]+$/) return toupper(substr(p[2], 1, 1)) substr(p[2], 2) " " p[1] (long ? " 1M" : "")
@@ -782,7 +841,21 @@ EOF
       main = ENVIRON["SL_MAIN"]; n = split(ENVIRON["SL_FILES"], F, "\n")
       for (i = 1; i <= n; i++) if (F[i] != "" && (getline t < F[i]) >= 0) { close(F[i]); ARGV[ARGC++] = F[i] }
     }
-    $1 == "m" { k = $2; if (!(k in req)) order[++nm] = k; req[k] += $3; tin[k] += $4; rd[k] += $5; wr[k] += $6; out[k] += $7; next }
+    FNR == 1 { early = 0 }
+    $1 == "m" {
+      k = $2; if (!(k in req)) order[++nm] = k; req[k] += $3; tin[k] += $4; rd[k] += $5; wr[k] += $6; out[k] += $7; eo[k] += $8
+      if (early) { qi[k] += $4; qr[k] += $5; qw[k] += $6; qo[k] += $7; qe[k] += $8 }
+      next
+    }
+    # Claude Code`s own totals per model as of its last note of them (cs: the
+    # time of it), and what was counted here by then (q...): the main
+    # transcript`s part, and below every subagent begun by then, in full.
+    FILENAME == main && $1 == "cs" { hascs = 1; cst = $2 + 0; next }
+    FILENAME == main && $1 == "c" {
+      k = $2; if (!(k in req)) { order[++nm] = k; req[k] = 0 }
+      inc[k] = 1; ci[k] = $3; cr[k] = $4; cw[k] = $5; co[k] = $6; qi[k] += $7; qr[k] += $8; qw[k] += $9; qo[k] += $10; qe[k] += $11
+      next
+    }
     $1 == "tools" { tools += $2; terr += $3; next }
     FILENAME == main && $1 == "turns" { turns = $2; next }
     FILENAME == main && $1 == "tdur" { tlast = $2; tsum = $3; next }
@@ -792,11 +865,23 @@ EOF
     FILENAME != main && $1 == "cov" {
       if ($3 != "") busy = busy (busy == "" ? "" : ",") $3
       if (zl > 0) busy = busy (busy == "" ? "" : ",") sprintf("%.0f:%.0f", $2, zl + cap)
+      beg = $3; sub(/:.*/, "", beg); if (beg == "") beg = $2
+      early = (hascs && beg + 0 <= cst)
       next
     }
     FILENAME == main && $1 == "mode" { mode = $2; next }
     END {
       bare = cur; sub(/\[1m\]$/, "", bare)
+      # Where Claude Code counted more than was counted here by then, the
+      # difference is added: requests that left no row, and the output of
+      # subagent responses written before they ended (its count there
+      # replaces the estimate).
+      if (hascs) for (k in inc) {
+        if (ci[k] > qi[k]) tin[k] += ci[k] - qi[k]
+        if (cr[k] > qr[k]) rd[k] += cr[k] - qr[k]
+        if (cw[k] > qw[k]) wr[k] += cw[k] - qw[k]
+        if (co[k] >= qo[k]) { out[k] += co[k] - qo[k]; eo[k] -= qe[k] }
+      }
       # The main model first, then the others by tokens, largest first.
       n = 0
       for (i = 1; i <= nm; i++) if (order[i] == bare) rank[++n] = order[i]
@@ -813,7 +898,7 @@ EOF
       for (i = 1; i <= n && i <= 3; i++) {
         k = rank[i]; is_cur = (k == bare)
         all = tin[k] + rd[k] + wr[k]; hit = all ? int(rd[k] * 100 / all + 0.5) : 0
-        part = E "[" (is_cur ? "1;36" : "34") "m" pretty(k) E "[0m " E "[2m↑" tok(all) " ↓" tok(out[k]) E "[0m"
+        part = E "[" (is_cur ? "1;36" : "34") "m" pretty(k) E "[0m " E "[2m↑" tok(all) " ↓" (eo[k] * 200 >= out[k] && eo[k] > 0 ? "~" : "") tok(out[k]) E "[0m"
         cache = " " E "[" (hit >= 60 ? "32" : "33") "m⚡" hit "%" E "[0m"
         if (is_cur && misses + 0 > 0) cache = cache E "[2m (" misses " miss" (misses + 0 == 1 ? "" : "es") ")" E "[0m"
         line = line (line == "" ? "" : sep) part cache
@@ -880,17 +965,49 @@ case "${t_mode:-}" in
   *)                 mode_part="${DIM}${t_mode}${RESET}" ;;
 esac
 
+# Columns a line takes: colour codes left out, one per character, two for ⚡ and 🔧.
+width() {
+  printf '%s' "$1" | LC_ALL=C awk -v E="$(printf '\033')" '{
+    gsub(E "\\[[0-9;]*m", ""); gsub(/\\033\[[0-9;]*m/, "")
+    w = 0; for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c < "\200" || c > "\277") w++ }
+    print w + gsub(/\342\232\241/, "") + gsub(/\360\237\224\247/, "") }'
+}
+# The terminal's width (COLUMNS, from Claude Code; the status line is indented by 2)
+cols=${COLUMNS:-0}; case "$cols" in ''|*[!0-9]*) cols=0 ;; esac
+
 # Line 1: model effort · mode · folder · ⎇ branch · diff · last turn
-out=""
-for part in "$model_part" "$mode_part" "$pwd_part" "$git_part" "$git_diff_part" "${last_turn:+${DIM}${last_turn}${RESET}}"; do
-  [ -z "$part" ] && continue
-  if [ -n "$out" ]; then out="${out}${DIM} · ${RESET}${part}"; else out="$part"; fi
-done
+line1_for() {
+  out=""
+  for part in "$@"; do
+    [ -z "$part" ] && continue
+    if [ -n "$out" ]; then out="${out}${DIM} · ${RESET}${part}"; else out="$part"; fi
+  done
+}
+last_part="${last_turn:+${DIM}${last_turn}${RESET}}"
+line1_for "$model_part" "$mode_part" "$pwd_part" "$git_part" "$git_diff_part" "$last_part"
+# In a narrow terminal it drops detail until it fits: the last turn, the file
+# states, the diff, then the end of a long branch name and of a long folder name.
+# Prints $1 without its last $2 + 1 characters and with a … for them, 8 kept at least
+cut_name() { printf '%s' "$1" | awk -v o="$2" '{ n = length($0) - o - 1; if (n < 8) n = 8; if (n < length($0)) print substr($0, 1, n) "…"; else print $0 }'; }
+if [ "$cols" -gt 0 ] && [ "$(width "$out")" -gt $(( cols - 2 )) ]; then
+  line1_for "$model_part" "$mode_part" "$pwd_part" "$git_part" "$git_diff_part"
+  [ "$(width "$out")" -gt $(( cols - 2 )) ] && line1_for "$model_part" "$mode_part" "$pwd_part" "$git_part" "$git_diff_short"
+  [ "$(width "$out")" -gt $(( cols - 2 )) ] && line1_for "$model_part" "$mode_part" "$pwd_part" "$git_part"
+  over=$(( $(width "$out") - (cols - 2) ))
+  if [ "$over" -gt 0 ] && [ -n "$git_part" ]; then
+    git_part="${BLUE}⎇ $(cut_name "$g_head" "$over")${RESET}"
+    [ "$g_ahead" -gt 0 ] && git_part="${git_part}${YELLOW} ↑${g_ahead}${RESET}"
+    [ "$g_behind" -gt 0 ] && git_part="${git_part}${YELLOW} ↓${g_behind}${RESET}"
+    line1_for "$model_part" "$mode_part" "$pwd_part" "$git_part"
+    over=$(( $(width "$out") - (cols - 2) ))
+  fi
+  if [ "$over" -gt 0 ] && [ -n "$pwd_part" ]; then
+    line1_for "$model_part" "$mode_part" "${BLUE}$(cut_name "$pwd_name" "$over")${RESET}" "$git_part"
+  fi
+fi
 [ -z "$out" ] && out="${CYAN}${short_model}${RESET}"
 
 # Line 2: context bar, then the tokens in the context now / the window's size
-ctx_size=$(printf '%s\n' "$input" | jq -r '.context_window.context_window_size // empty | numbers | floor' 2>/dev/null)
-case "$ctx_size" in ''|*[!0-9]*) ctx_size=0 ;; esac
 out="${out}${NL}${DIM}ctx${RESET} ${ctx_part}"
 # No reading yet (a new session, or just after /compact): no "0"
 if [ "$ctx_tokens" -gt 0 ]; then
@@ -923,17 +1040,9 @@ usd_part=""
 [ -n "$usd" ] && usd_part="${WHITE}\$$(printf '%.2f' "$usd")${RESET}"
 [ -n "$dur_part" ] && [ -n "$active_part" ] && dur_part="${dur_part} ${active_part}"
 meta_for() { meta=""; mappend "$1"; [ -n "$2" ] && mappend "$tools_part"; mappend "$turns_part"; mappend "$usd_part"; mappend "$dur_part"; }
-# Columns a line takes: colour codes left out, one per character, two for ⚡ and 🔧.
-width() {
-  printf '%s' "$1" | LC_ALL=C awk -v E="$(printf '\033')" '{
-    gsub(E "\\[[0-9;]*m", ""); gsub(/\\033\[[0-9;]*m/, "")
-    w = 0; for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c < "\200" || c > "\277") w++ }
-    print w + gsub(/\342\232\241/, "") + gsub(/\360\237\224\247/, "") }'
-}
-# The longest version that fits the terminal (COLUMNS, from Claude Code; the
-# status line is indented by 2): less on the models first, then no tool counts.
+# The longest version that fits the terminal: less on the models first, then
+# no tool counts.
 meta_for "$models_line" 1
-cols=${COLUMNS:-0}; case "$cols" in ''|*[!0-9]*) cols=0 ;; esac
 if [ "$cols" -gt 0 ] && [ -n "$models_line" ]; then
   for v in "$models_nofold|1" "$models_short|1" "$models_first|1" "$models_first|"; do
     [ "$(width "$meta")" -le $(( cols - 2 )) ] && break
